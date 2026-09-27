@@ -9,6 +9,10 @@
 @interface UIKeyboardDockItemButton : UIButton
 @end
 
+// 地球键（切换输入法）由 UIKit 绘制在【键盘扩展进程】内，不是宿主 App 进程。
+// 官方开关：UIInputViewController.needsInputModeSwitchKey，默认 YES。
+// 腾讯微信输入法(wxkb / com.tencent.wetype)没关它，所以左下角一直有地球。
+
 #define HG_DARWIN_NOTI "com.yzdmm.hideglobe.prefschanged"
 static BOOL hgEnabled = YES;
 
@@ -83,6 +87,21 @@ static void hgHideGlobeInDock(UIView *dock) {
 - (void)layoutSubviews {
     %orig;
     hgHideGlobeInDock(self);
+}
+%end
+
+// ===== 主方案：关掉苹果官方的「显示切换输入法键」开关 =====
+%hook UIInputViewController
+- (BOOL)needsInputModeSwitchKey {
+    if (hgEnabled) return NO;
+    return %orig;
+}
+- (void)setNeedsInputModeSwitchKey:(BOOL)flag {
+    %orig(hgEnabled ? NO : flag);
+}
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    if (hgEnabled) [self setNeedsInputModeSwitchKey:NO];
 }
 %end
 
