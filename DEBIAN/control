@@ -1,0 +1,9 @@
+Package: com.yzdmm.hideglobe
+Name: 隐藏地球图标
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Depends: firmware (>= 16.0), mobilesubstrate, preferenceloader
+Maintainer: yzdmm
+Author: yzdmm
+Section: Tweaks
+Description: 隐藏系统键盘地球（输入法切换）键，设置里可开关。rootless 适配，逐 App 生效。
