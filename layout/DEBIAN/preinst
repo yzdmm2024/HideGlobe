@@ -1,0 +1,4 @@
+#!/bin/bash
+# 清理旧版可能残留的入口 plist，避免设置里出现重复/失效入口
+rm -f "/var/jb/Library/PreferenceLoader/Preferences/隐藏地球老入口.plist" 2>/dev/null || true
+exit 0
