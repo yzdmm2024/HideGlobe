@@ -90,18 +90,33 @@ static void hgHideGlobeInDock(UIView *dock) {
 }
 %end
 
+// needsInputModeSwitchKey 在头文件里是 readonly，setter 只存在于运行时，
+// 直接写 [self setNeedsInputModeSwitchKey:NO] 编译不过，用 NSInvocation 绕过。
+static void hgForceSwitchKeyOff(id vc) {
+    if (!vc) return;
+    SEL sel = NSSelectorFromString(@"setNeedsInputModeSwitchKey:");
+    if (![vc respondsToSelector:sel]) return;
+    NSMethodSignature *sig = [vc methodSignatureForSelector:sel];
+    if (!sig) return;
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    [inv setSelector:sel];
+    BOOL no = NO;
+    [inv setArgument:&no atIndex:2];
+    [inv invokeWithTarget:vc];
+}
+
 // ===== 主方案：关掉苹果官方的「显示切换输入法键」开关 =====
 %hook UIInputViewController
 - (BOOL)needsInputModeSwitchKey {
     if (hgEnabled) return NO;
     return %orig;
 }
-- (void)setNeedsInputModeSwitchKey:(BOOL)flag {
-    %orig(hgEnabled ? NO : flag);
-}
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
-    if (hgEnabled) [self setNeedsInputModeSwitchKey:NO];
+    if (hgEnabled) {
+        hgForceSwitchKeyOff(self);
+        [self.view setNeedsLayout];
+    }
 }
 %end
 
