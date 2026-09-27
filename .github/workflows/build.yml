@@ -23,6 +23,9 @@ jobs:
           git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /opt/theos/sdks
           cd /opt/theos/sdks && git sparse-checkout set iPhoneOS14.5.sdk
 
+      - name: Fix maintainer script permissions
+        run: chmod 0755 layout/DEBIAN/preinst layout/DEBIAN/postinst
+
       - name: Build package (rootless)
         run: |
           export THEOS=/opt/theos
