@@ -1,134 +1,111 @@
-// HideGlobe — 隐藏系统键盘地球（输入法切换）键
-//
-// 真相（已用 iOS 私有头 UIKeyboardLayoutStar / UIKBKeyView 核实）：
-//   地球不是 UIKeyboardImpl 的独立按钮，而是 UIKeyboardLayoutStar keyplane 里一个
-//   representedString == "globe" 的 UIKBKeyView 键。
-//   我们在 layoutSubviews 后遍历所有键视图，命中 globe 键就隐藏它。
-//   参考实现：DockX / TypeX 都用 [keyView representedString] 识别按键。
-//
-// 偏好文件：/var/jb/var/mobile/Library/Preferences/com.yzdmm.hideglobe.plist
-// 与设置面板 Root.plist 的 defaults=com.yzdmm.hideglobe / key=enabled 对应
-//
-// 验证：跑 frida_hideglobe.js，先 dumpKeys() 确认 representedString 确为 "globe"
-//       （若你的 iOS 版本串不同，改下方 HG_GLOBE_REP 即可）。
-
+// HideGlobe Tweak.xm
+// 隐藏系统键盘 dock（UIKeyboardDockView）里最左侧的输入法切换键（地球/globe）
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-// 私有类声明：14.5 SDK 不含这些头，自行声明用到的 API，否则编译器不认
-// sharedInstance / layout，也不把 UIKeyboardLayoutStar 当作 UIView 子类。
-@interface UIKeyboardImpl : NSObject
-+ (instancetype)sharedInstance;
-- (id)layout;
+// 14.5 SDK 缺私有框架头，自行声明私有类
+@interface UIKeyboardDockView : UIView
 @end
-
-@interface UIKeyboardLayoutStar : UIView
+@interface UIKeyboardDockItemButton : UIButton
 @end
 
 #define HG_DARWIN_NOTI "com.yzdmm.hideglobe.prefschanged"
-
 static BOOL hgEnabled = YES;
 
-// 地球键识别串：
-//   - representedString 可能是 "globe"（旧系统），或直接就是 🌐（iOS 16 实测常见）
-//   - displayString 也可能是 🌐
-// 三个条件任一命中即隐藏；都不中再考虑改这里。
-static NSString *const HG_GLOBE_REP    = @"globe";
-static NSString *const HG_GLOBE_EMOJI = @"\U0001F310"; // 🌐
-
+// 直读 jbroot plist（绕过 cfprefsd 同步延迟，设置开关即时生效）
 static NSString *hgPrefsPath(void) {
-    NSString *leaf = @"var/mobile/Library/Preferences/com.yzdmm.hideglobe.plist";
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *p = [@"/var/jb" stringByAppendingPathComponent:leaf];
-    if ([fm fileExistsAtPath:p]) return p;
-    NSString *base = @"/private/var/containers/Bundle/Application";
-    for (NSString *it in [fm contentsOfDirectoryAtPath:base error:nil]) {
-        if ([it hasPrefix:@".jbroot-"]) {
-            NSString *cand = [[base stringByAppendingPathComponent:it] stringByAppendingPathComponent:leaf];
-            if ([fm fileExistsAtPath:cand]) return cand;
-        }
-    }
-    return p;
+    return @"/var/jb/var/mobile/Library/Preferences/com.yzdmm.hideglobe.plist";
 }
-
 static void hgLoadPrefs(void) {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:hgPrefsPath()];
-    id v = d ? d[@"enabled"] : nil;
-    if (v == nil) hgEnabled = YES;
-    else if ([v isKindOfClass:[NSNumber class]]) hgEnabled = [v boolValue];
-    else if ([v isKindOfClass:[NSString class]]) hgEnabled = [(NSString *)v boolValue];
-    else hgEnabled = YES;
+    if (d) {
+        id v = [d objectForKey:@"enabled"];
+        if (v) hgEnabled = [v boolValue];
+    }
 }
 
-// 取 displayString（地球键常在这里返回 🌐）
-static NSString *hgDisplayString(UIView *view) {
-    if ([view respondsToSelector:@selector(displayString)]) {
-        id ds = [view performSelector:@selector(displayString)];
-        if ([ds isKindOfClass:[NSString class]]) return ds;
+// 尽力取出 UIImageView 的图片资源名
+static NSString *hgImageName(UIView *v) {
+    if ([v isKindOfClass:[UIImageView class]]) {
+        UIImage *img = [(UIImageView *)v image];
+        if (img) {
+            id nm = [img valueForKey:@"_imageName"];
+            if (nm) return [nm description];
+            return [img description];
+        }
     }
     return nil;
 }
 
-// 递归遍历视图树：把命中地球键的 UIKBKeyView 隐藏
-static void hgHideGlobeInView(UIView *view) {
-    if (!view) return;
-    if ([view respondsToSelector:@selector(representedString)]) {
-        id rs = [view performSelector:@selector(representedString)];
-        NSString *rsStr = [rs isKindOfClass:[NSString class]] ? rs : nil;
-        NSString *dsStr = hgDisplayString(view);
-        BOOL match = NO;
-        if (rsStr) {
-            if ([rsStr caseInsensitiveCompare:HG_GLOBE_REP] == NSOrderedSame) match = YES;
-            if ([rsStr isEqualToString:HG_GLOBE_EMOJI]) match = YES;
-        }
-        if (dsStr && [dsStr isEqualToString:HG_GLOBE_EMOJI]) match = YES;
-        if (match) {
-            [view setHidden:YES];
-            [view setUserInteractionEnabled:NO];
-            if ([view respondsToSelector:@selector(setAlpha:)]) [view setAlpha:0];
-            NSLog(@"[HideGlobe] hid globe key rep=%@ disp=%@", rsStr, dsStr);
-            return;
-        }
+// 隐藏 dock 里的地球键：优先图片名含 globe，兜底最左侧按钮
+static void hgHideGlobeInDock(UIView *dock) {
+    if (!dock || !hgEnabled) return;
+    Class btnCls = objc_getClass("UIKeyboardDockItemButton");
+    if (!btnCls) return;
+
+    NSMutableArray *items = [NSMutableArray array];
+    for (UIView *sub in dock.subviews) {
+        if ([sub isKindOfClass:btnCls]) [items addObject:sub];
     }
-    for (UIView *sub in view.subviews) hgHideGlobeInView(sub);
+    if (items.count == 0) return;
+
+    UIView *target = nil;
+    // 1) 图片名含 globe / 地球
+    for (UIView *it in items) {
+        for (UIView *s2 in it.subviews) {
+            NSString *nm = hgImageName(s2);
+            if (nm && ([nm rangeOfString:@"globe" options:NSCaseInsensitiveSearch].location != NSNotFound
+                       || [nm rangeOfString:@"地球" options:NSCaseInsensitiveSearch].location != NSNotFound)) {
+                target = it; break;
+            }
+        }
+        if (target) break;
+    }
+    // 2) 兜底：最左侧按钮（地球在 dock 中永远最左）
+    if (!target) {
+        UIView *leftmost = nil;
+        CGFloat minX = CGFLOAT_MAX;
+        for (UIView *it in items) {
+            CGFloat x = it.frame.origin.x;
+            if (x < minX) { minX = x; leftmost = it; }
+        }
+        target = leftmost;
+    }
+    if (target) {
+        [target setHidden:YES];
+        [target setUserInteractionEnabled:NO];
+        [target setAlpha:0.0];
+        NSLog(@"[HideGlobe] hid globe button (hidden=%d)", (int)hgEnabled);
+    }
 }
 
-// 设置改值后强制当前键盘重新布局，立即生效
-static void hgRelayoutKeyboard(void) {
-    UIKeyboardImpl *kb = [UIKeyboardImpl sharedInstance];
-    if (!kb) return;
-    id layout = [kb layout];
-    if (layout && [layout respondsToSelector:@selector(setNeedsLayout)]) {
-        [layout setNeedsLayout];
-    }
-}
-
-%hook UIKeyboardLayoutStar
-
+%hook UIKeyboardDockView
 - (void)layoutSubviews {
     %orig;
-    if (!hgEnabled) return;
-    hgHideGlobeInView(self);
+    hgHideGlobeInDock(self);
 }
-
-- (void)updateKeyCentroids {
-    %orig;
-    if (!hgEnabled) return;
-    hgHideGlobeInView(self);
-}
-
 %end
 
+// 设置开关变化：重新布局键盘窗口
 static void hgPrefsChanged(CFNotificationCenterRef center, void *observer,
                            CFStringRef name, const void *object, CFDictionaryRef info) {
     hgLoadPrefs();
-    hgRelayoutKeyboard();
+    NSArray *wins = [UIApplication sharedApplication].windows;
+    for (UIWindow *w in wins) {
+        NSString *cn = NSStringFromClass([w class]);
+        if ([cn containsString:@"TextEffects"] || [cn containsString:@"Keyboard"]) {
+            [w setNeedsLayout];
+            break;
+        }
+    }
 }
 
 %ctor {
     hgLoadPrefs();
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-        NULL, hgPrefsChanged, CFSTR(HG_DARWIN_NOTI), NULL,
-        CFNotificationSuspensionBehaviorCoalesce);
+    CFNotificationCenterAddObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        NULL, hgPrefsChanged,
+        CFSTR(HG_DARWIN_NOTI), NULL,
+        CFNotificationSuspensionBehaviorDeliverImmediately);
     NSLog(@"[HideGlobe] loaded, hide globe = %@", hgEnabled ? @"ON" : @"OFF");
 }
