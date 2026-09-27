@@ -29,8 +29,12 @@
 
 static BOOL hgEnabled = YES;
 
-// 地球键识别串（frida 会打印所有键的 representedString 供核对；必要时改这里）
-static NSString *const HG_GLOBE_REP = @"globe";
+// 地球键识别串：
+//   - representedString 可能是 "globe"（旧系统），或直接就是 🌐（iOS 16 实测常见）
+//   - displayString 也可能是 🌐
+// 三个条件任一命中即隐藏；都不中再考虑改这里。
+static NSString *const HG_GLOBE_REP    = @"globe";
+static NSString *const HG_GLOBE_EMOJI = @"\U0001F310"; // 🌐
 
 static NSString *hgPrefsPath(void) {
     NSString *leaf = @"var/mobile/Library/Preferences/com.yzdmm.hideglobe.plist";
@@ -56,15 +60,33 @@ static void hgLoadPrefs(void) {
     else hgEnabled = YES;
 }
 
-// 递归遍历视图树：把 representedString 命中地球键的 UIKBKeyView 隐藏
+// 取 displayString（地球键常在这里返回 🌐）
+static NSString *hgDisplayString(UIView *view) {
+    if ([view respondsToSelector:@selector(displayString)]) {
+        id ds = [view performSelector:@selector(displayString)];
+        if ([ds isKindOfClass:[NSString class]]) return ds;
+    }
+    return nil;
+}
+
+// 递归遍历视图树：把命中地球键的 UIKBKeyView 隐藏
 static void hgHideGlobeInView(UIView *view) {
     if (!view) return;
     if ([view respondsToSelector:@selector(representedString)]) {
         id rs = [view performSelector:@selector(representedString)];
-        if ([rs isKindOfClass:[NSString class]] &&
-            [rs caseInsensitiveCompare:HG_GLOBE_REP] == NSOrderedSame) {
+        NSString *rsStr = [rs isKindOfClass:[NSString class]] ? rs : nil;
+        NSString *dsStr = hgDisplayString(view);
+        BOOL match = NO;
+        if (rsStr) {
+            if ([rsStr caseInsensitiveCompare:HG_GLOBE_REP] == NSOrderedSame) match = YES;
+            if ([rsStr isEqualToString:HG_GLOBE_EMOJI]) match = YES;
+        }
+        if (dsStr && [dsStr isEqualToString:HG_GLOBE_EMOJI]) match = YES;
+        if (match) {
             [view setHidden:YES];
             [view setUserInteractionEnabled:NO];
+            if ([view respondsToSelector:@selector(setAlpha:)]) [view setAlpha:0];
+            NSLog(@"[HideGlobe] hid globe key rep=%@ disp=%@", rsStr, dsStr);
             return;
         }
     }
@@ -84,6 +106,12 @@ static void hgRelayoutKeyboard(void) {
 %hook UIKeyboardLayoutStar
 
 - (void)layoutSubviews {
+    %orig;
+    if (!hgEnabled) return;
+    hgHideGlobeInView(self);
+}
+
+- (void)updateKeyCentroids {
     %orig;
     if (!hgEnabled) return;
     hgHideGlobeInView(self);
