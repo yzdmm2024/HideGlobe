@@ -1,0 +1,38 @@
+# ============ HideGlobe CI：rootless 构建出 deb（含设置面板）============
+# 关键点：用 theos/sdks 的 iPhoneOS14.5.sdk（新 Xcode SDK 无私有框架 tbd，链不了 Preferences.framework）
+name: Build HideGlobe
+
+on:
+  push:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install ldid xz 2>/dev/null || true
+          sudo mkdir -p /opt/theos
+          sudo chown $(whoami) /opt/theos
+          git clone --recursive https://github.com/theos/theos.git /opt/theos
+          rm -rf /opt/theos/sdks
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /opt/theos/sdks
+          cd /opt/theos/sdks && git sparse-checkout set iPhoneOS14.5.sdk
+
+      - name: Build package (rootless)
+        run: |
+          export THEOS=/opt/theos
+          make clean 2>/dev/null || true
+          make package FINALPACKAGE=1
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HideGlobe
+          path: |
+            packages/*.deb
+          if-no-files-found: error
