@@ -15,6 +15,16 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
+// 私有类声明：14.5 SDK 不含这些头，自行声明用到的 API，否则编译器不认
+// sharedInstance / layout，也不把 UIKeyboardLayoutStar 当作 UIView 子类。
+@interface UIKeyboardImpl : NSObject
++ (instancetype)sharedInstance;
+- (id)layout;
+@end
+
+@interface UIKeyboardLayoutStar : UIView
+@end
+
 #define HG_DARWIN_NOTI "com.yzdmm.hideglobe.prefschanged"
 
 static BOOL hgEnabled = YES;
@@ -63,16 +73,11 @@ static void hgHideGlobeInView(UIView *view) {
 
 // 设置改值后强制当前键盘重新布局，立即生效
 static void hgRelayoutKeyboard(void) {
-    Class kbCls = objc_getClass("UIKeyboardImpl");
-    if (!kbCls) return;
-    if ([kbCls respondsToSelector:@selector(sharedInstance)]) {
-        id kb = [kbCls sharedInstance];
-        if (kb && [kb respondsToSelector:@selector(layout)]) {
-            id layout = [kb layout];
-            if (layout && [layout respondsToSelector:@selector(setNeedsLayout)]) {
-                [layout setNeedsLayout];
-            }
-        }
+    UIKeyboardImpl *kb = [UIKeyboardImpl sharedInstance];
+    if (!kb) return;
+    id layout = [kb layout];
+    if (layout && [layout respondsToSelector:@selector(setNeedsLayout)]) {
+        [layout setNeedsLayout];
     }
 }
 
