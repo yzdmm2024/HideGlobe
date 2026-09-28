@@ -1,6 +1,6 @@
 Package: com.yzdmm.hideglobe
 Name: 隐藏地球图标
-Version: 1.0.4
+Version: 1.0.5
 Architecture: iphoneos-arm64
 Depends: firmware (>= 16.0), mobilesubstrate, preferenceloader
 Maintainer: yzdmm

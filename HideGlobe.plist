@@ -4,6 +4,12 @@
 <dict>
 	<key>Filter</key>
 	<dict>
+		<key>Classes</key>
+		<array>
+			<string>UIKeyboardDockView</string>
+			<string>UIKeyboardImpl</string>
+			<string>UIInputViewController</string>
+		</array>
 		<key>Bundles</key>
 		<array>
 			<string>com.apple.MobileSMS</string>
