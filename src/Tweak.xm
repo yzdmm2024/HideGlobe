@@ -1,25 +1,43 @@
-// HideGlobe Tweak.xm
-// 隐藏系统键盘 dock（UIKeyboardDockView）里最左侧的输入法切换键（地球/globe）
+// HideGlobe Tweak.xm (fixed 1.0.4)
+// 隐藏系统/第三方键盘里的地球（输入法切换）键与 dock 内的 globe 按钮。
+// 修复点：
+//   1) 偏好路径兼容 RootHide（/var/jb 不存在，真实 jbroot 是 .jbroot-XXXX）
+//   2) 注入到所有加载 UIKit 的进程（Filter -> Bundles: com.apple.UIKit），
+//      覆盖系统键盘（宿主 App 进程）与第三方键盘扩展进程
+//   3) globe 按位置隐藏：dock 最左 UIKeyboardDockItemButton（x 最小）即 globe；
+//      不依赖 imageName/representedString（实测为空），不递归进按钮子视图（会崩）
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-// 14.5 SDK 缺私有框架头，自行声明私有类
 @interface UIKeyboardDockView : UIView
 @end
 @interface UIKeyboardDockItemButton : UIButton
 @end
-
-// 地球键（切换输入法）由 UIKit 绘制在【键盘扩展进程】内，不是宿主 App 进程。
-// 官方开关：UIInputViewController.needsInputModeSwitchKey，默认 YES。
-// 腾讯微信输入法(wxkb / com.tencent.wetype)没关它，所以左下角一直有地球。
+@interface UIKeyboardImpl : UIView
+@end
 
 #define HG_DARWIN_NOTI "com.yzdmm.hideglobe.prefschanged"
 static BOOL hgEnabled = YES;
 
-// 直读 jbroot plist（绕过 cfprefsd 同步延迟，设置开关即时生效）
+// jbroot 兼容：RootHide/roothide-compat 没有 /var/jb，真实 jbroot 是 .jbroot-XXXX
 static NSString *hgPrefsPath(void) {
-    return @"/var/jb/var/mobile/Library/Preferences/com.yzdmm.hideglobe.plist";
+    NSString *leaf = @"var/mobile/Library/Preferences/com.yzdmm.hideglobe.plist";
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableArray *cands = [NSMutableArray array];
+    [cands addObject:[@"/var/jb" stringByAppendingPathComponent:leaf]];
+    // 扫描 /private/var/containers/Bundle/Application 下的 .jbroot-* 随机目录
+    NSString *base = @"/private/var/containers/Bundle/Application";
+    for (NSString *it in [fm contentsOfDirectoryAtPath:base error:nil]) {
+        if ([it hasPrefix:@".jbroot-"]) {
+            [cands addObject:[[base stringByAppendingPathComponent:it] stringByAppendingPathComponent:leaf]];
+        }
+    }
+    for (NSString *p in cands) {
+        if ([fm fileExistsAtPath:p]) return p;
+    }
+    return [cands firstObject];
 }
+
 static void hgLoadPrefs(void) {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:hgPrefsPath()];
     if (d) {
@@ -28,108 +46,95 @@ static void hgLoadPrefs(void) {
     }
 }
 
-// 尽力取出 UIImageView 的图片资源名
-static NSString *hgImageName(UIView *v) {
-    if ([v isKindOfClass:[UIImageView class]]) {
-        UIImage *img = [(UIImageView *)v image];
-        if (img) {
-            id nm = [img valueForKey:@"_imageName"];
-            if (nm) return [nm description];
-            return [img description];
-        }
-    }
-    return nil;
-}
-
-// 隐藏 dock 里的地球键：优先图片名含 globe，兜底最左侧按钮
-static void hgHideGlobeInDock(UIView *dock) {
-    if (!dock || !hgEnabled) return;
+// 在 dock 内隐藏最左的 dock item 按钮（=globe）。
+// 关键事实（已 frida 真机验证）：
+//   - 地球键在 dock 中始终排在最左（x 最小），不能靠 imageName/representedString 判定
+//     （实测所有 dock item 的 representedString 都是空，图在按钮内部 remote view 上）；
+//   - 不能递归进按钮子视图（会踩键盘 remote view，注入后原生崩溃）。
+// 所以只取 dock 的直接子视图，按 x 最小（兜底取第一个）定位 globe 并隐藏。
+static void hgHideLeftmostDockItem(UIView *dock, BOOL hide) {
     Class btnCls = objc_getClass("UIKeyboardDockItemButton");
     if (!btnCls) return;
-
-    NSMutableArray *items = [NSMutableArray array];
+    UIView *leftmost = nil;
+    CGFloat minX = CGFLOAT_MAX;
     for (UIView *sub in dock.subviews) {
-        if ([sub isKindOfClass:btnCls]) [items addObject:sub];
+        if ([sub isKindOfClass:btnCls]) {
+            CGFloat x = CGRectGetMinX(sub.frame);
+            if (x < minX) { minX = x; leftmost = sub; }
+        }
     }
-    if (items.count == 0) return;
+    if (!leftmost) {
+        // 兜底：取 dock 中第一个 dock item 按钮（globe 通常排在最前）
+        for (UIView *sub in dock.subviews)
+            if ([sub isKindOfClass:btnCls]) { leftmost = sub; break; }
+    }
+    if (leftmost) {
+        leftmost.hidden = hide;
+        leftmost.userInteractionEnabled = !hide;
+        leftmost.alpha = hide ? 0.0 : 1.0;
+    }
+}
 
-    UIView *target = nil;
-    // 1) 图片名含 globe / 地球
-    for (UIView *it in items) {
-        for (UIView *s2 in it.subviews) {
-            NSString *nm = hgImageName(s2);
-            if (nm && ([nm rangeOfString:@"globe" options:NSCaseInsensitiveSearch].location != NSNotFound
-                       || [nm rangeOfString:@"地球" options:NSCaseInsensitiveSearch].location != NSNotFound)) {
-                target = it; break;
-            }
-        }
-        if (target) break;
-    }
-    // 2) 兜底：最左侧按钮（地球在 dock 中永远最左）
-    if (!target) {
-        UIView *leftmost = nil;
-        CGFloat minX = CGFLOAT_MAX;
-        for (UIView *it in items) {
-            CGFloat x = it.frame.origin.x;
-            if (x < minX) { minX = x; leftmost = it; }
-        }
-        target = leftmost;
-    }
-    if (target) {
-        [target setHidden:YES];
-        [target setUserInteractionEnabled:NO];
-        [target setAlpha:0.0];
-        NSLog(@"[HideGlobe] hid globe button (hidden=%d)", (int)hgEnabled);
+// 在 root 里找所有 UIKeyboardDockView 并隐藏最左按钮（native 递归安全）
+static void hgHideGlobeInRoot(UIView *root, BOOL hide) {
+    if (!root || !hgEnabled) return;
+    Class dockCls = objc_getClass("UIKeyboardDockView");
+    if (!dockCls) return;
+    if ([root isKindOfClass:dockCls]) { hgHideLeftmostDockItem(root, hide); return; }
+    for (UIView *sub in root.subviews) {
+        if ([sub isKindOfClass:dockCls]) hgHideLeftmostDockItem(sub, hide);
+        else hgHideGlobeInRoot(sub, hide);
     }
 }
 
 %hook UIKeyboardDockView
 - (void)layoutSubviews {
     %orig;
-    hgHideGlobeInDock(self);
+    hgHideGlobeInRoot(self, YES);
 }
 %end
 
-// needsInputModeSwitchKey 在头文件里是 readonly，setter 只存在于运行时，
-// 直接写 [self setNeedsInputModeSwitchKey:NO] 编译不过，用 NSInvocation 绕过。
-static void hgForceSwitchKeyOff(id vc) {
-    if (!vc) return;
-    SEL sel = NSSelectorFromString(@"setNeedsInputModeSwitchKey:");
-    if (![vc respondsToSelector:sel]) return;
-    NSMethodSignature *sig = [vc methodSignatureForSelector:sel];
-    if (!sig) return;
-    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-    [inv setSelector:sel];
-    BOOL no = NO;
-    [inv setArgument:&no atIndex:2];
-    [inv invokeWithTarget:vc];
+%hook UIKeyboardImpl
+- (void)layoutSubviews {
+    %orig;
+    hgHideGlobeInRoot(self, YES);
 }
+%end
 
-// ===== 主方案：关掉苹果官方的「显示切换输入法键」开关 =====
+// 第三方键盘：官方「显示切换输入法键」开关
 %hook UIInputViewController
 - (BOOL)needsInputModeSwitchKey {
     if (hgEnabled) return NO;
     return %orig;
 }
-- (void)viewDidAppear:(BOOL)animated {
+- (void)viewDidLayoutSubviews {
     %orig;
     if (hgEnabled) {
-        hgForceSwitchKeyOff(self);
-        [self.view setNeedsLayout];
+        SEL sel = NSSelectorFromString(@"setNeedsInputModeSwitchKey:");
+        if ([self respondsToSelector:sel]) {
+            NSMethodSignature *sig = [self methodSignatureForSelector:sel];
+            if (sig) {
+                NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                [inv setSelector:sel];
+                BOOL no = NO;
+                [inv setArgument:&no atIndex:2];
+                [inv invokeWithTarget:self];
+            }
+        }
     }
 }
 %end
 
-// 设置开关变化：重新布局键盘窗口
+// 设置开关变化：重新加载偏好 + 重排键盘窗口
 static void hgPrefsChanged(CFNotificationCenterRef center, void *observer,
                            CFStringRef name, const void *object, CFDictionaryRef info) {
     hgLoadPrefs();
-    NSArray *wins = [UIApplication sharedApplication].windows;
-    for (UIWindow *w in wins) {
+    UIApplication *app = [UIApplication sharedApplication];
+    for (UIWindow *w in app.windows) {
         NSString *cn = NSStringFromClass([w class]);
-        if ([cn containsString:@"TextEffects"] || [cn containsString:@"Keyboard"]) {
+        if ([cn containsString:@"Keyboard"] || [cn containsString:@"TextEffects"]) {
             [w setNeedsLayout];
-            break;
+            hgHideGlobeInRoot(w, hgEnabled);
         }
     }
 }
@@ -141,5 +146,5 @@ static void hgPrefsChanged(CFNotificationCenterRef center, void *observer,
         NULL, hgPrefsChanged,
         CFSTR(HG_DARWIN_NOTI), NULL,
         CFNotificationSuspensionBehaviorDeliverImmediately);
-    NSLog(@"[HideGlobe] loaded, hide globe = %@", hgEnabled ? @"ON" : @"OFF");
+    NSLog(@"[HideGlobe] loaded (fixed 1.0.4), hide globe = %@", hgEnabled ? @"ON" : @"OFF");
 }
