@@ -1,5 +1,7 @@
-// HideGlobe Tweak.xm (fixed 1.0.4)
+// HideGlobe Tweak.xm (1.0.6)
 // 隐藏系统/第三方键盘里的地球（输入法切换）键与 dock 内的 globe 按钮。
+// 1.0.6：最低系统从 16.0 下调到 15.0（UIKeyboardDockView 自 iOS 11 就存在，挂载点通用），
+//        支持 iOS 15.x 设备（如 iPhone 13 Pro Max 15.7.1）。
 // 修复点：
 //   1) 偏好路径兼容 RootHide（/var/jb 不存在，真实 jbroot 是 .jbroot-XXXX）
 //   2) 注入到所有加载 UIKit 的进程（Filter -> Bundles: com.apple.UIKit），
